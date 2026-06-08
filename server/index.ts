@@ -17,6 +17,15 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Prevent browser caching for API routes to avoid leaking data between users
+app.use('/api', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/leaves', leavesRoutes);
@@ -32,7 +41,7 @@ if (process.env.NODE_ENV === 'production') {
   const distPath = join(__dirname, '../dist');
   app.use(express.static(distPath));
   
-  app.get('*', (req, res) => {
+  app.get(/.*/, (req, res) => {
     res.sendFile(join(distPath, 'index.html'));
   });
 }
