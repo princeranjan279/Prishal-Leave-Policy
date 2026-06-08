@@ -7,6 +7,7 @@ import { LeaveForm } from './components/LeaveForm';
 import { LeaveHistory } from './components/LeaveHistory';
 import { Simulators } from './components/Simulators';
 import { AuthPage } from './components/AuthPage';
+import { LeavePolicy } from './components/LeavePolicy';
 import type { AuthSuccessPayload } from './components/AuthPage';
 import {
   getLeaves,
@@ -125,11 +126,13 @@ function App() {
   // --- Dynamic Balance Calculations ---
   
   // 1. Casual Leave (CL)
+  // Policy HR-POL-001 §7: 8 days/yr; Q2 joiner (May) gets 6 days pro-rata (Sec 5.3)
   const clCredited = is2026 ? 6 : 8;
   const clUsed = currentLeaves.filter(l => l.type === 'CL').reduce((sum, l) => sum + l.days, 0);
   const clAvailable = Math.max(0, clCredited - clUsed);
 
   // 2. Sick Leave (SL)
+  // Policy HR-POL-001 §8: 7 days/yr; Q2 joiner (May) gets 5 days pro-rata (Sec 5.3)
   const slCredited = is2026 ? 5 : 7;
   const slUsed = currentLeaves.filter(l => l.type === 'SL').reduce((sum, l) => sum + l.days, 0);
   const slAvailable = Math.max(0, slCredited - slUsed);
@@ -591,6 +594,9 @@ function App() {
                 leaves={currentLeaves}
                 onCancelLeave={handleCancelLeave}
               />
+
+              {/* Official Leave Policy Information */}
+              <LeavePolicy />
             </>
           )}
         </section>
