@@ -114,6 +114,31 @@ export const LeaveForm: React.FC<LeaveFormProps> = ({
       return;
     }
 
+    // Policy HR-POL-001 §7.2: CL maximum 3 consecutive working days per stretch
+    if (type === 'CL' && calculatedDays > 3) {
+      setError('Casual Leave (CL) cannot exceed 3 consecutive working days per stretch per company policy.');
+      return;
+    }
+
+    // Policy HR-POL-001 §7.2 & §8.2: CL and SL cannot be combined
+    const hasActiveCLOnDates = existingLeaves.some(item => {
+      if (type === 'SL' && item.type === 'CL') {
+        const s = new Date(startDate), e = new Date(endDate);
+        const is = new Date(item.startDate), ie = new Date(item.endDate);
+        return s <= ie && e >= is;
+      }
+      if (type === 'CL' && item.type === 'SL') {
+        const s = new Date(startDate), e = new Date(endDate);
+        const is = new Date(item.startDate), ie = new Date(item.endDate);
+        return s <= ie && e >= is;
+      }
+      return false;
+    });
+    if (hasActiveCLOnDates) {
+      setError('CL and SL cannot be combined or taken on overlapping dates per company policy.');
+      return;
+    }
+
     if (!reason.trim()) {
       setError('Please provide a reason for taking leave.');
       return;

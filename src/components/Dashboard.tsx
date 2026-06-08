@@ -79,9 +79,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ balances, simulatedYear })
         </div>
 
         <div className="balance-meta">
-          <span>Expires: Dec 31, {simulatedYear}</span>
+          <span>Quarterly Credit · Lapses Dec 31</span>
           <span className="flex-center text-warning" style={{ fontSize: '0.75rem' }}>
-            <ShieldAlert size={12} /> No Carry-over
+            <ShieldAlert size={12} /> Not Encashable
           </span>
         </div>
       </div>
@@ -118,9 +118,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ balances, simulatedYear })
         </div>
 
         <div className="balance-meta">
-          <span>Expires: Dec 31, {simulatedYear}</span>
+          <span>Year-Start Credit · Lapses Dec 31</span>
           <span className="flex-center text-danger" style={{ fontSize: '0.75rem' }}>
-            <ShieldAlert size={12} /> Expiry Policy
+            <ShieldAlert size={12} /> Not Encashable
           </span>
         </div>
       </div>
@@ -158,7 +158,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ balances, simulatedYear })
         </div>
 
         <div className="balance-meta">
-          <span>Carry-forward enabled</span>
+          <span>Carry-fwd enabled · Cap: 45 days</span>
           <span className="flex-center text-success" style={{ fontSize: '0.75rem' }}>
             {balances.EL.accruedBlocksCount * 20} days elapsed
           </span>
