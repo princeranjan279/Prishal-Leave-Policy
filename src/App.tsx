@@ -1,11 +1,23 @@
-import { useState } from 'react';
-import { CalendarDays, LogOut, CheckCircle2, ShieldAlert } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { CalendarDays, LogOut, CheckCircle2, ShieldAlert, UserCircle2, Loader2 } from 'lucide-react';
 import type { LeaveRecord, LeaveBalances, AccrualBlock } from './types';
 import { Dashboard } from './components/Dashboard';
 import { WorkingDaysTracker } from './components/WorkingDaysTracker';
 import { LeaveForm } from './components/LeaveForm';
 import { LeaveHistory } from './components/LeaveHistory';
 import { Simulators } from './components/Simulators';
+import { AuthPage } from './components/AuthPage';
+import type { AuthSuccessPayload } from './components/AuthPage';
+import {
+  getLeaves,
+  addLeave,
+  deleteLeave,
+  deleteAllLeaves,
+  getSettings,
+  saveSettings,
+  resetSettings,
+} from './lib/leaveService';
+import { signOut } from './lib/authService';
 
 // Helper to generate 20-day calendar blocks for Earned Leave accrual
 const generate20DayBlocks = (year: number, startMonth: number): AccrualBlock[] => {
@@ -41,6 +53,18 @@ const generate20DayBlocks = (year: number, startMonth: number): AccrualBlock[] =
   return blocks;
 };
 
+/** Count how many accrual blocks have been credited by a given date */
+function computeAccruedBlocks(dateStr: string, blocks: AccrualBlock[]): number {
+  const t = new Date(dateStr).getTime();
+  return blocks.filter(b => t >= new Date(b.creditDate).getTime()).length;
+}
+
+/** Format a Date as YYYY-MM-DD */
+function toDateStr(d: Date): string {
+  const pad = (n: number) => (n < 10 ? `0${n}` : n);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 interface ExitSettlement {
   payout: number;
   encashedDays: number;
@@ -49,9 +73,22 @@ interface ExitSettlement {
 }
 
 function App() {
+  // ── Auth State ──────────────────────────────────────────────────────────
+  const [authUser, setAuthUser] = useState<AuthSuccessPayload | null>(null);
+  const [dbLoading, setDbLoading] = useState(false);
+
+  // ── Real-time clock (actual system clock, refreshes every minute) ───────
+  const [realToday, setRealToday] = useState<string>(toDateStr(new Date()));
+  useEffect(() => {
+    const tick = () => setRealToday(toDateStr(new Date()));
+    tick();
+    const id = setInterval(tick, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   // --- Simulation States ---
   const [simulatedYear, setSimulatedYear] = useState<number>(2026);
-  const [simulatedToday, setSimulatedToday] = useState<string>('2026-06-06'); // Real current metadata date
+  const [simulatedToday, setSimulatedToday] = useState<string>('2026-06-08');
   const [exitStatus, setExitStatus] = useState<ExitSettlement | null>(null);
 
   // --- Leaves Logged States ---
@@ -62,10 +99,12 @@ function App() {
   const [elCarryForwarded, setElCarryForwarded] = useState<number>(0);
   const [archivedLeaves2026, setArchivedLeaves2026] = useState<LeaveRecord[]>([]);
 
+  // Ref to track the current userId without stale closures
+  const userIdRef = useRef<string>('');
+
   // Configuration factors
   const is2026 = simulatedYear === 2026;
   const currentLeaves = is2026 ? leaves2026 : leaves2027;
-  const setLeaves = is2026 ? setLeaves2026 : setLeaves2027;
 
   // Active Month index bounds for leave ranges (0-indexed)
   const activeMonths = is2026 
@@ -79,24 +118,23 @@ function App() {
   const todayTime = new Date(simulatedToday).getTime();
   const accruedBlocksCount = accrualBlocks.filter(b => todayTime >= new Date(b.creditDate).getTime()).length;
 
+  // Real-time EL (live, based on actual today's date — always 2026 base)
+  const realTimeAccrualBlocks = generate20DayBlocks(2026, 4);
+  const realTimeAccruedCount = computeAccruedBlocks(realToday, realTimeAccrualBlocks);
+
   // --- Dynamic Balance Calculations ---
   
   // 1. Casual Leave (CL)
-  // 2026: May to Dec (8 months). Credits occur in June, Sept, Dec => 3 quarters active => 6 CL.
-  // 2027: Jan to Dec (12 months). Credits occur in March, June, Sept, Dec => 4 quarters active => 8 CL.
   const clCredited = is2026 ? 6 : 8;
   const clUsed = currentLeaves.filter(l => l.type === 'CL').reduce((sum, l) => sum + l.days, 0);
   const clAvailable = Math.max(0, clCredited - clUsed);
 
   // 2. Sick Leave (SL)
-  // 2026: May to Dec (8 months). Pro-rata: 7 * 8/12 = 5 SL.
-  // 2027: Jan to Dec (12 months). Full year: 7 SL.
   const slCredited = is2026 ? 5 : 7;
   const slUsed = currentLeaves.filter(l => l.type === 'SL').reduce((sum, l) => sum + l.days, 0);
   const slAvailable = Math.max(0, slCredited - slUsed);
 
   // 3. Earned Leave (EL)
-  // Credited as 1 day for each completed 20-day block + carry forwarded from 2026
   const elCredited = accruedBlocksCount + (is2026 ? 0 : elCarryForwarded);
   const elUsed = currentLeaves.filter(l => l.type === 'EL').reduce((sum, l) => sum + l.days, 0);
   const elAvailable = Math.max(0, elCredited - elUsed);
@@ -114,53 +152,166 @@ function App() {
     }
   };
 
+  // ── DB Hydration on Login ───────────────────────────────────────────────
+  const hydrateFromDb = useCallback(async (userId: string) => {
+    setDbLoading(true);
+    try {
+      const [settings, lv2026, lv2027] = await Promise.all([
+        getSettings(userId),
+        getLeaves(userId, 2026),
+        getLeaves(userId, 2027),
+      ]);
+      setSimulatedYear(settings.simulatedYear);
+      setSimulatedToday(settings.simulatedToday);
+      setElCarryForwarded(settings.elCarryForwarded);
+      setLeaves2026(lv2026);
+      setLeaves2027(lv2027);
+      if (settings.simulatedYear === 2027) {
+        setArchivedLeaves2026(lv2026);
+      }
+    } catch (err: unknown) {
+      console.error(err instanceof Error ? err.message : 'Failed to load data from database.');
+    } finally {
+      setDbLoading(false);
+    }
+  }, []);
+
+  const handleAuthSuccess = useCallback((user: AuthSuccessPayload) => {
+    userIdRef.current = user.id;
+    setAuthUser(user);
+    hydrateFromDb(user.id);
+  }, [hydrateFromDb]);
+
   // --- Handlers ---
 
-  const handleApplyLeave = (newLeave: Omit<LeaveRecord, 'id'>) => {
-    const record: LeaveRecord = {
-      ...newLeave,
-      id: Math.random().toString(36).substring(2, 9),
-    };
-    setLeaves(prev => [...prev, record]);
-  };
+  const handleApplyLeave = useCallback(async (newLeave: Omit<LeaveRecord, 'id'>) => {
+    const userId = userIdRef.current;
+    const year = simulatedYear;
+    try {
+      const tempId = '__temp__' + Date.now();
+      const tempRecord: LeaveRecord = { id: tempId, ...newLeave };
+      if (year === 2026) {
+        setLeaves2026(prev => [...prev, tempRecord]);
+      } else {
+        setLeaves2027(prev => [...prev, tempRecord]);
+      }
+      
+      const saved = await addLeave(userId, year, newLeave);
+      
+      if (year === 2026) {
+        setLeaves2026(prev => prev.map(l => (l.id === tempId ? saved : l)));
+      } else {
+        setLeaves2027(prev => prev.map(l => (l.id === tempId ? saved : l)));
+      }
+    } catch (err) {
+      console.error('Failed to save leave:', err);
+    }
+  }, [simulatedYear]);
 
-  const handleCancelLeave = (id: string) => {
-    setLeaves(prev => prev.filter(l => l.id !== id));
-  };
+  const handleCancelLeave = useCallback(async (id: string) => {
+    if (simulatedYear === 2026) {
+      setLeaves2026(prev => prev.filter(l => l.id !== id));
+    } else {
+      setLeaves2027(prev => prev.filter(l => l.id !== id));
+    }
+    try {
+      await deleteLeave(id);
+    } catch (err) {
+      console.error('Failed to delete leave:', err);
+    }
+  }, [simulatedYear]);
 
-  const handleRollover = () => {
+  const handleRollover = useCallback(async () => {
     if (!is2026) return;
-    
-    // Carry forward remaining EL
+    const userId = userIdRef.current;
     const leftoverEL = elAvailable;
+
     setElCarryForwarded(leftoverEL);
-    
-    // Archive 2026 leaves
     setArchivedLeaves2026(leaves2026);
-    
-    // Roll year to 2027 and adjust simulated today date to start of year
     setSimulatedYear(2027);
     setSimulatedToday('2027-01-01');
-  };
 
-  const handleExitCompany = (payout: number, encashed: number, forfeited: number, dailyRate: number) => {
-    setExitStatus({
-      payout,
-      encashedDays: encashed,
-      forfeitedDays: forfeited,
-      dailyRate
-    });
-  };
+    try {
+      await saveSettings(userId, {
+        simulatedYear: 2027,
+        simulatedToday: '2027-01-01',
+        elCarryForwarded: leftoverEL,
+      });
+    } catch (err) {
+      console.error('Failed to save rollover settings:', err);
+    }
+  }, [is2026, elAvailable, leaves2026]);
 
-  const handleResetAll = () => {
+  const handleSimulatedDateChange = useCallback(async (date: string) => {
+    setSimulatedToday(date);
+    const userId = userIdRef.current;
+    try {
+      await saveSettings(userId, {
+        simulatedYear,
+        simulatedToday: date,
+        elCarryForwarded,
+      });
+    } catch (err) {
+      console.error('Failed to persist simulated date:', err);
+    }
+  }, [simulatedYear, elCarryForwarded]);
+
+  const handleExitCompany = useCallback((payout: number, encashed: number, forfeited: number, dailyRate: number) => {
+    setExitStatus({ payout, encashedDays: encashed, forfeitedDays: forfeited, dailyRate });
+  }, []);
+
+  const handleResetAll = useCallback(async () => {
+    const userId = userIdRef.current;
     setSimulatedYear(2026);
-    setSimulatedToday('2026-06-06');
+    setSimulatedToday('2026-06-08');
     setExitStatus(null);
     setLeaves2026([]);
     setLeaves2027([]);
     setElCarryForwarded(0);
     setArchivedLeaves2026([]);
-  };
+    try {
+      await Promise.all([
+        deleteAllLeaves(userId),
+        resetSettings(userId),
+      ]);
+    } catch (err) {
+      console.error('Failed to reset DB data:', err);
+    }
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    signOut();
+    setAuthUser(null);
+    userIdRef.current = '';
+    setSimulatedYear(2026);
+    setSimulatedToday('2026-06-08');
+    setExitStatus(null);
+    setLeaves2026([]);
+    setLeaves2027([]);
+    setElCarryForwarded(0);
+    setArchivedLeaves2026([]);
+  }, []);
+
+  // ─── Auth Gate ─────────────────────────────────────────────────────────
+  if (!authUser) {
+    return <AuthPage onAuthSuccess={handleAuthSuccess} />;
+  }
+
+  // ─── Loading Screen ────────────────────────────────────────────────────
+  if (dbLoading) {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', gap: '1rem',
+        background: 'var(--bg-main)',
+      }}>
+        <Loader2 size={40} className="spin-icon text-info" />
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
+          Loading your leave data from Turso…
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -186,24 +337,59 @@ function App() {
           </p>
         </div>
 
-        {/* Year Indicator & Reset buttons */}
-        <div className="sim-banner">
-          <div className="sim-info">
-            <span style={{ fontSize: '0.825rem', color: 'var(--text-secondary)' }}>Leave Cycle:</span>
-            <span style={{ color: '#fff', fontWeight: 700 }}>
-              {is2026 ? 'May - Dec 2026 (Pro-rata Active)' : 'Jan - Dec 2027 (Full Year)'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {/* Real-time EL counter pill */}
+          <div className="realtime-el-pill">
+            <span className="realtime-dot" />
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Live EL</span>
+            <span style={{ fontWeight: 700, color: 'var(--el-color)', fontSize: '0.9rem' }}>
+              {realTimeAccruedCount}
+            </span>
+            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>days</span>
+          </div>
+
+          {/* Year Indicator & Reset buttons */}
+          <div className="sim-banner">
+            <div className="sim-info">
+              <span style={{ fontSize: '0.825rem', color: 'var(--text-secondary)' }}>Leave Cycle:</span>
+              <span style={{ color: '#fff', fontWeight: 700 }}>
+                {is2026 ? 'May - Dec 2026 (Pro-rata Active)' : 'Jan - Dec 2027 (Full Year)'}
+              </span>
+            </div>
+            <span 
+              className="badge" 
+              style={{ 
+                backgroundColor: is2026 ? 'var(--cl-bg-alpha)' : 'var(--el-bg-alpha)', 
+                color: is2026 ? 'var(--cl-color)' : 'var(--el-color)',
+                border: `1px solid ${is2026 ? 'var(--cl-border-alpha)' : 'var(--el-border-alpha)'}`
+              }}
+            >
+              FY {simulatedYear}
             </span>
           </div>
-          <span 
-            className="badge" 
-            style={{ 
-              backgroundColor: is2026 ? 'var(--cl-bg-alpha)' : 'var(--el-bg-alpha)', 
-              color: is2026 ? 'var(--cl-color)' : 'var(--el-color)',
-              border: `1px solid ${is2026 ? 'var(--cl-border-alpha)' : 'var(--el-border-alpha)'}`
-            }}
-          >
-            FY {simulatedYear}
-          </span>
+
+          {/* User + Logout */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <div className="user-avatar-chip">
+              <UserCircle2 size={16} className="text-info" />
+              <span style={{
+                fontSize: '0.8rem', fontWeight: 600,
+                maxWidth: '120px', overflow: 'hidden',
+                textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>
+                {authUser.name}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="btn btn-secondary btn-sm"
+              title="Sign out"
+              style={{ gap: '0.35rem' }}
+            >
+              <LogOut size={14} /> Sign Out
+            </button>
+          </div>
         </div>
       </header>
 
@@ -395,7 +581,7 @@ function App() {
                   blocks={accrualBlocks}
                   simulatedToday={simulatedToday}
                   simulatedYear={simulatedYear}
-                  onUpdateSimulatedDate={setSimulatedToday}
+                  onUpdateSimulatedDate={handleSimulatedDateChange}
                   activeMonths={activeMonths}
                 />
               </div>
@@ -422,7 +608,7 @@ function App() {
           color: 'var(--text-muted)'
         }}
       >
-        Prishal Leave Hub © {simulatedYear} • Powered by React, Vite &amp; Vanilla CSS • Designed for visual excellence.
+        Prishal Leave Hub © {simulatedYear} • Powered by React, Vite, Turso &amp; Vanilla CSS
       </footer>
     </div>
   );
