@@ -8,11 +8,18 @@ router.use(requireAuth);
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
-    const year = req.query.year ? parseInt(req.query.year as string, 10) : new Date().getFullYear();
+    const rawYear = req.query.year ? parseInt(req.query.year as string, 10) : new Date().getFullYear();
+
+    // Guard against NaN (e.g. ?year= with no value) which would return 0 rows
+    // and make the dashboard look empty even if leaves exist in the DB.
+    if (isNaN(rawYear)) {
+      res.status(400).json({ error: 'Invalid year parameter' });
+      return;
+    }
 
     const result = await db.execute({
       sql: 'SELECT id, type, start_date, end_date, days, reason, created_at FROM leave_records WHERE user_id = ? AND year = ? ORDER BY start_date ASC',
-      args: [userId, year]
+      args: [userId, rawYear]
     });
 
     const leaves = result.rows.map(row => ({
@@ -41,15 +48,22 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       return;
     }
 
+    // Validate year is a sane number
+    const yearNum = Number(year);
+    if (isNaN(yearNum) || yearNum < 2020 || yearNum > 2100) {
+      res.status(400).json({ error: 'Invalid year value' });
+      return;
+    }
+
     const id = Math.random().toString(36).substring(2, 15);
     const now = new Date().toISOString();
 
     await db.execute({
       sql: 'INSERT INTO leave_records (id, user_id, year, type, start_date, end_date, days, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      args: [id, userId, year, type, startDate, endDate, days, reason || '', now]
+      args: [id, userId, yearNum, type, startDate, endDate, days, reason || '', now]
     });
 
-    res.json({ id, year, type, startDate, endDate, days, reason, createdAt: now });
+    res.json({ id, year: yearNum, type, startDate, endDate, days, reason, createdAt: now });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

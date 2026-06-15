@@ -12,4 +12,7 @@ services:
       - key: TURSO_AUTH_TOKEN
         sync: false
       - key: JWT_SECRET
-        generateValue: true
+        # Set a stable secret in Render's dashboard environment variables.
+        # Do NOT use generateValue: true — it regenerates on every deploy,
+        # instantly invalidating all active user sessions (JWT tokens).
+        sync: false
