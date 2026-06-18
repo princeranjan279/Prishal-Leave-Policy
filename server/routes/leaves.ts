@@ -72,7 +72,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
-    const { id } = req.params;
+    const id = req.params.id as string;
 
     const result = await db.execute({
       sql: 'DELETE FROM leave_records WHERE id = ? AND user_id = ?',
