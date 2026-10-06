@@ -1,8 +1,15 @@
-/** Module-level token store (cleared on logout). */
-let _token: string | null = null;
+const TOKEN_KEY = 'prishal_auth_token';
+
+/** Module-level token store — restored from localStorage on page load. */
+let _token: string | null = localStorage.getItem(TOKEN_KEY);
 
 export function setAuthToken(token: string | null): void {
   _token = token;
+  if (token) {
+    localStorage.setItem(TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
+  }
 }
 
 export function getAuthToken(): string | null {

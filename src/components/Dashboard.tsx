@@ -7,7 +7,7 @@ interface DashboardProps {
   simulatedYear: number;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ balances, simulatedYear }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ balances, simulatedYear: _simulatedYear }) => {
   // Helper to render SVG progress ring
   const renderProgressRing = (used: number, total: number, strokeColor: string) => {
     const radius = 28;

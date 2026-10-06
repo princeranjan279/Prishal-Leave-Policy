@@ -20,6 +20,19 @@ import {
 } from './lib/leaveService';
 import { signOut } from './lib/authService';
 
+const USER_KEY = 'prishal_auth_user';
+
+/** Read the persisted user from localStorage (set on login, cleared on logout). */
+function getPersistedUser(): AuthSuccessPayload | null {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    return raw ? (JSON.parse(raw) as AuthSuccessPayload) : null;
+  } catch {
+    return null;
+  }
+}
+
+
 // Helper to generate 20-day calendar blocks for Earned Leave accrual
 const generate20DayBlocks = (year: number, startMonth: number): AccrualBlock[] => {
   const blocks: AccrualBlock[] = [];
@@ -75,7 +88,8 @@ interface ExitSettlement {
 
 function App() {
   // ── Auth State ──────────────────────────────────────────────────────────
-  const [authUser, setAuthUser] = useState<AuthSuccessPayload | null>(null);
+  // Initialise from localStorage so a page refresh doesn't force re-login
+  const [authUser, setAuthUser] = useState<AuthSuccessPayload | null>(getPersistedUser);
   const [dbLoading, setDbLoading] = useState(false);
 
   // ── Real-time clock (actual system clock, refreshes every minute) ───────
@@ -101,7 +115,16 @@ function App() {
   const [archivedLeaves2026, setArchivedLeaves2026] = useState<LeaveRecord[]>([]);
 
   // Ref to track the current userId without stale closures
-  const userIdRef = useRef<string>('');
+  const userIdRef = useRef<string>(authUser?.id ?? '');
+
+  // ── Auto-hydrate on first load if already authenticated ─────────────────
+  useEffect(() => {
+    if (authUser) {
+      userIdRef.current = authUser.id;
+      hydrateFromDb(authUser.id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount only
 
   // Configuration factors
   const is2026 = simulatedYear === 2026;
@@ -181,9 +204,11 @@ function App() {
 
   const handleAuthSuccess = useCallback((user: AuthSuccessPayload) => {
     userIdRef.current = user.id;
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
     setAuthUser(user);
     hydrateFromDb(user.id);
   }, [hydrateFromDb]);
+
 
   // --- Handlers ---
 
@@ -284,6 +309,7 @@ function App() {
 
   const handleLogout = useCallback(() => {
     signOut();
+    localStorage.removeItem(USER_KEY);
     setAuthUser(null);
     userIdRef.current = '';
     setSimulatedYear(2026);
@@ -294,6 +320,7 @@ function App() {
     setElCarryForwarded(0);
     setArchivedLeaves2026([]);
   }, []);
+
 
   // ─── Auth Gate ─────────────────────────────────────────────────────────
   if (!authUser) {
